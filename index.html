@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Carte des jeunes</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+body{font-family:system-ui,sans-serif;margin:0;background:#f5f5f4;color:#222}
+header{background:#1e3a5f;color:#fff;padding:12px 16px;font-weight:600}
+main{max-width:640px;margin:auto;padding:12px}
+label{display:block;margin:10px 0 3px;font-size:14px}
+input{width:100%;box-sizing:border-box;padding:10px;font-size:16px;border:1px solid #bbb;border-radius:8px}
+button{padding:11px 16px;font-size:16px;border:0;border-radius:8px;background:#1e3a5f;color:#fff;margin:8px 6px 0 0}
+button.s{background:#666}
+#map{height:320px;border-radius:8px;margin-top:6px}
+#adm #map{height:75vh}
+#thumb{width:90px;height:90px;object-fit:cover;border-radius:8px;display:none;margin-top:6px}
+#msg{margin-top:12px;padding:10px;border-radius:8px;display:none;background:#e7f3e7;word-break:break-all}
+.hide{display:none}
+</style></head><body>
+<header>⛪ Carte des jeunes</header>
+<main>
+<div id="adm" class="hide"><div id="map2"></div></div>
+<div id="frm">
+ <label>Nom</label><input id="nom" autocomplete="family-name">
+ <label>Prénom</label><input id="prenom" autocomplete="given-name">
+ <label>Téléphone</label><input id="tel" type="tel" autocomplete="tel">
+ <label>Quartier</label><input id="quartier">
+ <label>Photo</label><input id="photo" type="file" accept="image/*" capture="user">
+ <img id="thumb" alt="">
+ <label>Mon domicile : touchez la carte pour placer le point</label>
+ <button class="s" id="gps" type="button">📍 Utiliser ma position</button>
+ <div id="map"></div>
+ <button id="save" type="button">Enregistrer</button>
+ <div id="msg"></div>
+</div>
+</main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const API = 'https://script.google.com/macros/s/AKfycbx-nRPD2Hz7rtVE8PXB-VqEf2UA2SKeoUKZTsejl-Z3ddm5unxgxfGhhjHBafZSCI1r/exec';   // ...exec
+const $ = id => document.getElementById(id);
+const q = new URLSearchParams(location.search);
+let code = q.get('fiche') || localStorage.getItem('fiche') || '', photo = '', marker = null;
+const tiles = () => L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19, attribution: '© OpenStreetMap'});
+const centre = [6.1725, 1.2314]; // Lomé
+
+function setPoint(m, ll) { if (marker) marker.setLatLng(ll); else marker = L.marker(ll).addTo(m); }
+
+async function admin(c) {
+  $('frm').classList.add('hide'); $('adm').classList.remove('hide');
+  $('adm').innerHTML = '<div id="map"></div>';
+  const m = L.map('map').setView(centre, 12); tiles().addTo(m);
+  const r = await (await fetch(API + '?action=list&admin=' + encodeURIComponent(c))).json();
+  if (!r.ok) { $('adm').textContent = 'Code responsable invalide.'; return; }
+  const pts = [];
+  r.data.forEach(j => {
+    const d = document.createElement('div');
+    if (j.photo) { const i = document.createElement('img'); i.src = j.photo; i.style.cssText = 'width:80px;border-radius:6px;display:block'; d.append(i); }
+    const b = document.createElement('b'); b.textContent = (j.prenom || '') + ' ' + (j.nom || ''); d.append(b);
+    [j.tel, j.quartier].forEach(t => { const p = document.createElement('div'); p.textContent = t || ''; d.append(p); });
+    L.marker([j.lat, j.lng]).addTo(m).bindPopup(d); pts.push([j.lat, j.lng]);
+  });
+  if (pts.length) m.fitBounds(pts, {padding: [30, 30], maxZoom: 15});
+}
+
+function formulaire() {
+  const m = L.map('map').setView(centre, 12); tiles().addTo(m);
+  m.on('click', e => setPoint(m, e.latlng));
+  $('gps').onclick = () => navigator.geolocation
+    ? navigator.geolocation.getCurrentPosition(p => { const ll = [p.coords.latitude, p.coords.longitude]; setPoint(m, ll); m.setView(ll, 17); },
+        () => alert('Position refusée : touchez la carte à la place.'), {enableHighAccuracy: true})
+    : alert('GPS indisponible.');
+  $('photo').onchange = e => {
+    const f = e.target.files[0]; if (!f) return;
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas'), s = 240 / Math.min(img.width, img.height);
+      c.width = Math.round(img.width * Math.min(s, 1)); c.height = Math.round(img.height * Math.min(s, 1));
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      photo = c.toDataURL('image/jpeg', .6); $('thumb').src = photo; $('thumb').style.display = 'block';
+    };
+    img.src = URL.createObjectURL(f);
+  };
+  $('save').onclick = async () => {
+    if (!$('nom').value.trim() || !marker) return alert('Nom et position sur la carte obligatoires.');
+    $('save').disabled = true;
+    const ll = marker.getLatLng();
+    try {
+      const r = await (await fetch(API, {method: 'POST', body: JSON.stringify({
+        code, nom: $('nom').value.trim(), prenom: $('prenom').value.trim(), tel: $('tel').value.trim(),
+        quartier: $('quartier').value.trim(), lat: ll.lat, lng: ll.lng, photo})})).json();
+      if (!r.ok) throw 0;
+      code = r.code; localStorage.setItem('fiche', code);
+      const lien = location.origin + location.pathname + '?fiche=' + code;
+      $('msg').style.display = 'block';
+      $('msg').textContent = '✅ Enregistré. Gardez ce lien pour modifier votre fiche : ' + lien;
+    } catch (e) { alert('Échec de l’enregistrement. Réessayez.'); }
+    $('save').disabled = false;
+  };
+  if (code) fetch(API + '?action=get&code=' + encodeURIComponent(code)).then(r => r.json()).then(r => {
+    if (!r.ok) return; const d = r.data;
+    $('nom').value = d.nom; $('prenom').value = d.prenom; $('tel').value = d.tel; $('quartier').value = d.quartier;
+    if (d.photo) { $('thumb').src = d.photo; $('thumb').style.display = 'block'; }
+    setPoint(m, [d.lat, d.lng]); m.setView([d.lat, d.lng], 16);
+  }).catch(() => {});
+}
+q.get('admin') ? admin(q.get('admin')) : formulaire();
+</script></body></html>
